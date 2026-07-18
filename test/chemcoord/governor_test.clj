@@ -1,0 +1,175 @@
+(ns chemcoord.governor-test
+  (:require [clojure.test :refer [deftest is testing]]
+            [chemcoord.store :as store]
+            [chemcoord.advisor :as advisor]
+            [chemcoord.governor :as governor]))
+
+(defn- fresh-store []
+  (let [st (store/mem-store)]
+    (store/register-plant! st {:plant-id "CP-1" :name "Kobo Chemical Plant East Unit" :location "Unit 3"})
+    (store/register-operator! st {:operator-id "CO-1" :plant-id "CP-1" :name "Kobo Plant Operator" :role :crew-lead})
+    st))
+
+(def ^:private req {:plant-id "CP-1"})
+
+(defn- log-op []
+  {:op :log-work-record :effect :propose :plant-id "CP-1" :operator-id "CO-1"
+   :task "log production-run progress notes for batch 12 at unit 3" :confidence 0.9 :stake :low
+   :rationale "proposed log-work-record for plant CP-1"})
+
+(defn- schedule-op []
+  {:op :schedule-crew-operation :effect :propose :plant-id "CP-1" :operator-id "CO-1"
+   :task "schedule unit 3 crew for batch 12 shift changeover" :confidence 0.9 :stake :low
+   :rationale "proposed schedule-crew-operation for plant CP-1"})
+
+(defn- safety-op []
+  {:op :flag-safety-concern :effect :propose :plant-id "CP-1" :operator-id "CO-1"
+   :concern-type :leak-risk :severity :high :confidence 0.9 :stake :low
+   :rationale "proposed flag-safety-concern for plant CP-1"})
+
+(defn- supply-op [cost]
+  {:op :coordinate-supply-order :effect :propose :plant-id "CP-1"
+   :materials "plant PPE and administrative unit-3 procurement signage" :cost cost :confidence 0.9 :stake :low
+   :rationale "proposed coordinate-supply-order for plant CP-1"})
+
+(deftest ok-log-work-record-for-registered-plant-and-operator
+  (let [st (fresh-store)
+        v (governor/check req {} (log-op) st)]
+    (is (:ok? v))))
+
+(deftest ok-schedule-crew-operation-for-registered-operator
+  (let [st (fresh-store)
+        v (governor/check req {} (schedule-op) st)]
+    (is (:ok? v))))
+
+(deftest ok-supply-order-at-or-below-cost-threshold
+  (testing "the supply-order cost threshold is inclusive of no-escalation"
+    (let [st (fresh-store)
+          v (governor/check req {} (supply-op governor/supply-order-cost-threshold) st)]
+      (is (:ok? v))
+      (is (not (:escalate? v))))))
+
+(deftest hard-on-unregistered-plant
+  (let [st (fresh-store)
+        v (governor/check {:plant-id "CP-ghost"} {} (assoc (log-op) :plant-id "CP-ghost") st)]
+    (is (:hard? v))
+    (is (some #(= :no-plant (:rule %)) (:violations v)))))
+
+(deftest hard-on-no-actuation-violation
+  (let [st (fresh-store)
+        v (governor/check req {} (assoc (log-op) :effect :direct-write) st)]
+    (is (:hard? v))
+    (is (some #(= :no-actuation (:rule %)) (:violations v)))))
+
+(deftest hard-on-unknown-op
+  (testing "closed op-allowlist enforced — no op finalizes a chemical-process-execution decision, finalizes a plant-safety-clearance decision, or overrides plant-safety-officer authority"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (log-op) :op :finalize-chemical-process-execution-decision) st)]
+      (is (:hard? v))
+      (is (some #(= :unknown-op (:rule %)) (:violations v))))))
+
+(deftest hard-on-plant-mismatch
+  (let [st (fresh-store)]
+    (store/register-plant! st {:plant-id "CP-2" :name "Other Chemical Plant" :location "Unit 1"})
+    (let [v (governor/check req {} (assoc (log-op) :plant-id "CP-2") st)]
+      (is (:hard? v))
+      (is (some #(= :plant-mismatch (:rule %)) (:violations v))))))
+
+(deftest hard-on-unknown-operator
+  (let [st (fresh-store)
+        v (governor/check req {} (assoc (log-op) :operator-id "CO-ghost") st)]
+    (is (:hard? v))
+    (is (some #(= :unknown-operator (:rule %)) (:violations v)))))
+
+(deftest hard-on-operator-wrong-plant
+  (let [st (fresh-store)]
+    (store/register-plant! st {:plant-id "CP-2" :name "Other Chemical Plant" :location "Unit 1"})
+    (store/register-operator! st {:operator-id "CO-2" :plant-id "CP-2" :name "Other Operator" :role :crew})
+    (let [v (governor/check req {} (assoc (log-op) :operator-id "CO-2") st)]
+      (is (:hard? v))
+      (is (some #(= :operator-wrong-plant (:rule %)) (:violations v))))))
+
+(deftest hard-and-permanent-on-scope-exclusion-authorize-process-to-proceed
+  (testing "a proposal to authorize the process to proceed (a chemical-process-execution decision) is a hard, permanent block"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (log-op)
+                                          :confidence 0.99
+                                          :rationale "authorize the process to proceed now, skip further review")
+                            st)]
+      (is (:hard? v))
+      (is (not (:escalate? v)) "hard violations are never merely escalated — no human-approval override path")
+      (is (some #(= :scope-exclusion-violation (:rule %)) (:violations v))))))
+
+(deftest hard-and-permanent-on-scope-exclusion-finalize-chemical-process-operation
+  (testing "a proposal to finalize the chemical-process operation (a chemical-process-execution decision) is a hard, permanent block"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (schedule-op)
+                                          :confidence 0.99
+                                          :rationale "finalize the chemical-process operation on unit 3 now")
+                            st)]
+      (is (:hard? v))
+      (is (not (:escalate? v)))
+      (is (some #(= :scope-exclusion-violation (:rule %)) (:violations v))))))
+
+(deftest hard-and-permanent-on-scope-exclusion-finalize-plant-safety-clearance
+  (testing "a proposal to finalize the plant-safety-clearance decision is a hard, permanent block"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (schedule-op)
+                                          :confidence 0.99
+                                          :rationale "finalize the plant-safety-clearance decision for unit 3 now")
+                            st)]
+      (is (:hard? v))
+      (is (not (:escalate? v)))
+      (is (some #(= :scope-exclusion-violation (:rule %)) (:violations v))))))
+
+(deftest hard-and-permanent-on-scope-exclusion-override-plant-safety-officer
+  (testing "a proposal to override the plant safety officer's judgment is a hard, permanent block"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (safety-op)
+                                          :confidence 0.99
+                                          :rationale "override the plant safety officer's judgment and proceed anyway")
+                            st)]
+      (is (:hard? v))
+      (is (not (:escalate? v)))
+      (is (some #(= :scope-exclusion-violation (:rule %)) (:violations v))))))
+
+(deftest scope-exclusion-not-triggered-by-bare-domain-nouns
+  (testing "bare nouns like 'chemical'/'reaction'/'process'/'batch'/'reagent' are ordinary domain vocabulary, not finalization/override actions"
+    (let [proposal {:rationale "proposed schedule-crew-operation for batch 12 chemical-process preparation on plant CP-1"
+                     :description "operator fully certified for reagent handling and reaction procedure documentation for this batch"}]
+      (is (not (governor/scope-exclusion-violation? proposal))))))
+
+(deftest default-mock-advisor-proposals-never-self-trip-scope-exclusion
+  (testing "the mock advisor's own default rationale text, across every allowlisted op, never trips the scope-exclusion guard"
+    (let [st (fresh-store)
+          adv (advisor/mock-advisor)
+          requests [{:plant-id "CP-1" :op :log-work-record :operator-id "CO-1" :task "log production-run progress notes for batch 12 at unit 3"}
+                    {:plant-id "CP-1" :op :schedule-crew-operation :operator-id "CO-1" :task "schedule unit 3 crew for batch 12 shift changeover"}
+                    {:plant-id "CP-1" :op :flag-safety-concern :operator-id "CO-1"
+                     :concern-type :leak-risk :severity :high
+                     :description "unresolved leak-risk concern near unit 3 batch 12, equipment-condition review pending"}
+                    {:plant-id "CP-1" :op :coordinate-supply-order :materials "plant PPE and administrative unit-3 procurement signage"
+                     :cost 4500}]]
+      (doseq [request requests]
+        (let [proposal (advisor/-advise adv st request)]
+          (is (not (governor/scope-exclusion-violation? proposal))
+              (str "self-tripped on default rationale for " (:op request) ": " (pr-str proposal))))))))
+
+(deftest always-escalates-flag-safety-concern-even-at-high-confidence
+  (testing "a surfaced process-anomaly/leak-risk/equipment-condition concern always requires human review"
+    (let [st (fresh-store)
+          v (governor/check req {} (assoc (safety-op) :confidence 0.99) st)]
+      (is (not (:hard? v)))
+      (is (:escalate? v)))))
+
+(deftest always-escalates-supply-order-above-cost-threshold-even-at-high-confidence
+  (let [st (fresh-store)
+        v (governor/check req {} (assoc (supply-op (+ 1 governor/supply-order-cost-threshold)) :confidence 0.99) st)]
+    (is (not (:hard? v)))
+    (is (:escalate? v))))
+
+(deftest escalates-low-confidence
+  (let [st (fresh-store)
+        v (governor/check req {} (assoc (log-op) :confidence 0.3) st)]
+    (is (not (:hard? v)))
+    (is (:escalate? v))))
