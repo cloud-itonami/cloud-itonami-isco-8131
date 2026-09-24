@@ -1,0 +1,34 @@
+;; What this vertical's robot physically does, declared for
+;; kotoba.robotics.process (kotoba-lang/robotics). `kbb -M:physics` runs it.
+;;
+;; README "Robotics premise": a chemical-plant scheduling/logistics
+;; coordination robot logs production runs and batches, proposes crew/shift
+;; schedules, surfaces safety concerns and coordinates equipment supply; it
+;; never operates chemical-processing equipment. Its physical work is plant
+;; logistics: moving drums on a drum truck, and the raw-material transfer from
+;; a delivery tanker to the day tank that the batch schedule waits for.
+;;
+;; Every number without a cited source is marked `estimate` in its :basis.
+;; Replacing an estimate with a sourced value is this bot's growth work.
+{:physics/schema "itonami.physical-ai.spec.v1"
+ :repo "cloud-itonami/cloud-itonami-isco-8131"
+ :cases
+ [{:id :tanker-to-day-tank-transfer
+   :kind :pipe-flow
+   :procedure "raw material is pumped from the delivery tanker through 40 m of 50 mm stainless line up 8 m into the day tank"
+   :params {:diameter-m 0.05 :length-m 40.0 :roughness-m 1.5e-6 :density-kg-m3 1050.0
+            :viscosity-pa-s 2.0e-3 :pump-efficiency 0.6 :elevation-m 8.0}
+   :sweep {:param :q-m3s :values [0.002 0.004 0.006 0.008 0.010]}
+   :quantity :velocity-mps
+   :limit {:max 3.0 :basis "estimate: 3 m/s line-velocity ceiling against erosion and surge in the transfer line"}
+   :boundary {:lo 0.001 :hi 0.02}}
+  {:id :drum-truck
+   :kind :transport
+   :procedure "drum AMR moves a filled drum from the filling station to the warehouse"
+   :params {:mass-kg 100.0 :distance-m 70.0 :v-max-mps 1.0 :a-max-mps2 0.3
+            :brake-decel-mps2 1.0 :drive-force-n 200.0 :crr 0.02
+            :cog-height-m 0.30 :payload-cog-height-m 0.70 :support-half-length-m 0.35
+            :max-time-s 1200.0}
+   :sweep {:param :payload-kg :values [50.0 100.0 200.0 300.0 400.0]}
+   :quantity :cycle-time-s
+   :limit {:max 90.0 :basis "estimate: one drum leg within the 90 s filling cycle"}}]}
