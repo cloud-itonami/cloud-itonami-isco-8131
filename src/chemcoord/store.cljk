@@ -1,7 +1,7 @@
 (ns chemcoord.store
   "SSoT for the ISCO-08 8131 Chemical Products Plant and Machine
   Operators chemical-plant scheduling/logistics coordination actor
-  (itonami actor pattern, ADR-2607121000 / CLAUDE.md Actors section;
+  (itonami actor pattern, ADR-2607121000 / AGENTS.md Actors section;
   README's 'Robotics premise' — a chemical-plant scheduling/logistics
   coordination robot proposes crew/shift scheduling, production-run/
   batch/progress record logging, safety-concern flags and

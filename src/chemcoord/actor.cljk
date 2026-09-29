@@ -1,7 +1,7 @@
 (ns chemcoord.actor
   "ChemCoordActor — the ISCO-08 8131 Chemical Products Plant and
   Machine Operators chemical-plant scheduling/logistics coordination
-  actor as a `langgraph.graph/state-graph` (ADR-2607121000 / CLAUDE.md
+  actor as a `langgraph.graph/state-graph` (ADR-2607121000 / AGENTS.md
   Actors section). One graph run = one coordination operation request
   (intake → advise → govern → decide → commit/hold, with a
   human-approval interrupt for escalated proposals). No infinite
